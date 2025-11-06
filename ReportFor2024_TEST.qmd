@@ -721,65 +721,8 @@ smr <- df_filtered_outcome |>
 ```
 
 ```{r}
-#| label: TEST SOFA-ORITdays
 
-# Загружаем и фильтруем данные
-df_filtered_scatter <- rds("df_filtered") |>
-  droplevels() |>
-  filter(`Номер гемоперфузии` == 1) |>
-  select(`Между поступлением в ОРИТ и сорбцией`,
-         `SOFA/pSOFA перед гемоперфузией`) |>
-  
-  # Заменяем пропущенные значения
-  mutate(
-    `SOFA/pSOFA перед гемоперфузией` = replace_na(`SOFA/pSOFA перед гемоперфузией`, 
-                                                  mean(`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE)),
-    `Между поступлением в ОРИТ и сорбцией` = replace_na(`Между поступлением в ОРИТ и сорбцией`, 
-                                                       mean(`Между поступлением в ОРИТ и сорбцией`, na.rm = TRUE))
-  )
-
-# Строим jitter plot с маленькими окружностями без линии
-ggplot(df_filtered_scatter, aes(x = `Между поступлением в ОРИТ и сорбцией`, 
-                               y = `SOFA/pSOFA перед гемоперфузией`)) +
-  geom_jitter(alpha = 0.6, size = 1, shape = 1, color = "black", 
-              width = 0.1, height = 0.1, stroke = 0.8) +
-  labs(x = "Время между поступлением в ОРИТ и сорбцией",
-       y = "SOFA/pSOFA перед гемоперфузией",
-       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
-  theme_minimal() +
-  theme(plot.title = element_text(size = 12))
-```
-
-```{r}
-#| label: TEST SOFA-ORITdays2
-#| 
-# Загружаем и фильтруем данные, удаляем строки с пропущенными значениями
-df_filtered_scatter <- rds("df_filtered") |>
-  droplevels() |>
-  filter(`Номер гемоперфузии` == 1) |>
-  select(`Между поступлением в ОРИТ и сорбцией`,
-         `SOFA/pSOFA перед гемоперфузией`) |>
-  
-# Удаляем строки с пропущенными значениями и 0
-  drop_na(`Между поступлением в ОРИТ и сорбцией`, 
-          `SOFA/pSOFA перед гемоперфузией`)|>
-filter(`SOFA/pSOFA перед гемоперфузией` != 0)
-
-# Строим jitter plot с маленькими окружностями без линии
-ggplot(df_filtered_scatter, aes(x = `Между поступлением в ОРИТ и сорбцией`, 
-                               y = `SOFA/pSOFA перед гемоперфузией`)) +
-  geom_jitter(alpha = 0.6, size = 1, shape = 1, color = "black", 
-              width = 0.1, height = 0.1, stroke = 0.8) +
-  labs(x = "Время между поступлением в ОРИТ и сорбцией",
-       y = "SOFA/pSOFA перед гемоперфузией",
-       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
-  theme_minimal() +
-  theme(plot.title = element_text(size = 12))
-```
-
-```{r}
-
-#| label: tbl-test 
+#| label: TEST_Outcome_gender_table 
 #| tbl-cap: 'Исход/пол'
 
 
@@ -807,6 +750,36 @@ table_summary
 
 ```{r}
 
+#| label: TEST_SOFA-ICU_1
+#| 
+# Загружаем и фильтруем данные
+df_filtered_scatter <- rds("df_filtered") |>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1) |>
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `SOFA/pSOFA перед гемоперфузией`) |>
+  
+# Удаляем строки с пропущенными значениями и где SOFA/pSOFA = 0
+  drop_na(`Между поступлением в ОРИТ и сорбцией`, 
+          `SOFA/pSOFA перед гемоперфузией`)|>
+filter(`SOFA/pSOFA перед гемоперфузией` != 0)
+
+# Строим jitter plot 
+ggplot(df_filtered_scatter, aes(x = `Между поступлением в ОРИТ и сорбцией`, 
+                               y = `SOFA/pSOFA перед гемоперфузией`)) +
+  geom_jitter(alpha = 0.6, size = 1, shape = 1, color = "black", 
+              width = 0.1, height = 0.1, stroke = 0.8) +
+  labs(x = "Время между поступлением в ОРИТ и сорбцией",
+       y = "SOFA/pSOFA перед гемоперфузией",
+       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+```
+
+```{r}
+
+#| label: TEST_SOFA-ICU_geom_smooth
+#| 
 # Загружаем и фильтруем данные
 df_filtered_scatter <- rds("df_filtered") |>
   droplevels() |>
@@ -848,7 +821,7 @@ ggplot(df_filtered_scatter,
        aes(x = `Между поступлением в ОРИТ и сорбцией`, 
            y = `SOFA/pSOFA перед гемоперфузией`)) +
   
-  # Данные - все точки в виде серых окружностей с jitter
+  # Данные - jitter plot
   geom_jitter(alpha = 0.6, size = 1.5, shape = 1, stroke = 0.8, 
               color = "black", width = 0.1, height = 0.1) +
   
@@ -870,7 +843,7 @@ ggplot(df_filtered_scatter,
         panel.grid.minor = element_blank()) +
   labs(x = "Время между поступлением в ОРИТ и сорбцией",
        y = "SOFA/pSOFA перед гемоперфузией",
-       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией")+
+       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
   theme(plot.title = element_text(size = 12))
 ```
 
