@@ -1,0 +1,885 @@
+---
+title: "Итоги годового регистра"
+author:
+- "Лаптева Ф.Р."
+- "Попов А.Ю."
+date: today
+format:
+  html:
+    self-contained: true
+number-sections: true
+editor: visual
+toc: true
+crossref:
+  chapters: true
+execute:
+  echo: false
+  warning: false
+  error: false
+  message: false
+  fig.align: 'center'
+  dev: "png"
+  cache: false
+---
+
+```{r}
+#| lable: initialization
+#| include: FALSE
+#| warning: FALSE
+  
+library(lubridate)
+library(DT) # интеррактивные табл
+library(reshape2)
+#install.packages("apaTables") # Для академических корреляционых таблиц
+#install.packages("metan") # для p value в корреляционном графике
+library(here)
+source(here("lib", "setup.R"))
+
+# Определяем путь к директории
+#directory <- paste0("C:\\Users\\", Sys.getenv("USERNAME"), 
+#                    "\\YandexDisk\\2 Эфферон КИ\\Регистры и серии кейсов\\Регист #1\\")
+
+# Получаем список файлов с расширением .xlsx
+#files <- dir(path = directory, pattern = '\\.xlsx$', full.names = TRUE)
+files <- list.files(pattern = '\\.xlsx$', full.names = TRUE)
+
+# Читаем файлы, удаляем "Подрядчик" (если он есть), затем объединяем
+all_data <- lapply(files, function(file) {
+  df <- as.data.frame(read_excel(file))  # Читаем Excel в data.frame
+  if ("Подрядчик" %in% colnames(df)) {   # Проверяем наличие столбца
+    df <- df %>% select(-Подрядчик)      # Удаляем его
+  }
+  
+  return(df)
+})
+
+# Объединяем все датасеты в один
+df <- bind_rows(all_data)
+
+to_rds(df, "df")
+```
+
+```{r}
+#| lable: prepare-data
+#| include: FALSE
+
+dataset <- rds("df") %>%
+  mutate(ID = row_number()) %>%
+  mutate(
+    Дата_гемоперфузии = dmy(`Дата проведения гемоперфузии Efferon`),
+    Дата_заполнения = dmy(`Дата заполнения формы`),
+    Поступление_в_ОРИТ = dmy(`Поступление в ОРИТ`),
+    `Между гемосорбцией и занесением в БД` = as.numeric(Дата_заполнения - Дата_гемоперфузии),
+    `Между поступлением в ОРИТ и сорбцией` = as.numeric(Дата_гемоперфузии - Поступление_в_ОРИТ),
+    `SOFA/pSOFA перед гемоперфузией` = as.numeric(gsub("[^0-9.]", "", `SOFA/pSOFA перед гемоперфузией`)),
+    `Вид используемого устройства` = recode(`Вид используемого устройства`, 
+                                                        "ct" = "Efferon CT", "lps" = "Efferon LPS"),
+    `Возраст (Полных лет)` = as.numeric(`Возраст (Полных лет)`),
+    Пол = as.factor(Пол),
+    `Исход` = na_if(`Исход`, "---"),  # Заменяем "---" на NA
+    `Исход` = factor(`Исход`, levels = c("Смерть", "Выписан", NA)),
+    `Общее улучшение` = na_if(`Общее улучшение...15`, "---"),
+    `Терапевтический эффект` = na_if(`Терапевтический эффект...16`, "---"),
+    `Побочные эффекты` = na_if(`Побочные эффекты...17`, "---")
+  )
+to_rds(dataset, "dataset")
+```
+
+```{r}
+#| lable: age-and-sofa-IQR
+
+df <- rds("dataset")
+
+get_age <- function(df, condition_col, condition_value) {
+  # Фильтрация датафрейма
+  filtered_df <- dplyr::filter(df, !!rlang::sym(condition_col) == condition_value)
+  
+  age_vector <- filtered_df$`Возраст (Полных лет)`
+  
+  Me <- median(age_vector, na.rm = TRUE)
+  Q1 <- round(hdquantile(age_vector, probs = 0.25, na.rm = TRUE), 0)
+  Q3 <- round(hdquantile(age_vector, probs = 0.75, na.rm = TRUE), 0)
+  
+  return(paste(Me, "(",Q1,";",Q3,")"))
+}
+
+get_SOFA <- function(age_vector) {
+  Me <- median(age_vector, na.rm = TRUE)
+  Q1 <- round(hdquantile(age_vector, probs = 0.25, na.rm = TRUE), 0)
+  Q3 <- round(hdquantile(age_vector, probs = 0.75, na.rm = TRUE), 0)
+  
+  return(paste(Me, "(",Q1,";",Q3,")"))
+}
+
+
+```
+
+В период с `r (min(df[["Дата_заполнения"]]))` по `r (max(df[["Дата_заполнения"]]))` отмечено `r nrow(df)` сорбций проведенных `r nrow(df |> dplyr::filter(df[["Номер гемоперфузии"]] == 1))` пациентам. Дважды сорбции были проведены `r sum(df[["Номер гемоперфузии"]] == 2)` пациентам, более 3 раз `r sum(!(df[["Номер гемоперфузии"]] %in% c("1", "2")))` пациентам.
+
+<br> Возраст пациентов `r get_age(df, "Номер гемоперфузии", 1)` лет. <br> SOFA `r get_SOFA(df[["SOFA/pSOFA перед гемоперфузией"]])` баллов. <br> В занесении данных приняло участие `r nrow(dplyr::distinct(df, ФИО))` реаниматолога.
+
+# Графики
+
+```{r}
+#| label: fig-SOFA1
+#| fig-cap: 'Распределение баллов SOFA по типам устройств'
+#| fig-subcap:
+#|   - ''
+#| layout-ncol: 1
+#| results: hide
+#| fig-dpi: 300
+#| fig-width: 8
+#| fig-height: 5
+
+df <- rds("dataset")
+
+ggplot(df|>filter(`Вид используемого устройства` %in% c("Efferon LPS", "Efferon CT")),
+       aes(x = `SOFA/pSOFA перед гемоперфузией`, fill = `Вид используемого устройства`)) +
+  geom_histogram(binwidth = 1, color = "black",
+                 position = "identity", alpha = 0.5) + # stack есди нужно друг над другом
+  labs(title = NULL, 
+       x = "SOFA", 
+       y = NULL,
+       fill = NULL) +
+  scale_x_continuous(breaks = seq(min(df$`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE), # NA Не учитываем
+                                  max(df$`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE), 
+                                  by = 1)) +
+  scale_fill_manual(values = c("Efferon LPS" = "#1f77b4", "Efferon CT" = "#ff7f0e")) +  # Задаем контрастные цвета
+  theme_minimal() +
+  theme(
+    legend.position = "top",  # Легенда наверху
+    legend.justification = "center",  # Центрирование легенды
+    legend.title = element_text(size = 12),  # Формат заголовка легенды
+    legend.text = element_text(size = 12),  # Формат текста в легенде
+    plot.title = element_text(hjust = 0.5),  # Центрирование заголовка
+    panel.grid.minor = element_blank() # Убираем мелкую сетку
+  )     
+
+```
+
+```{r}
+#| label: fig-SOFA2
+#| fig-cap: 'Распределение баллов SOFA по типам устройств.2'
+#| fig-subcap:
+#|   - ''
+#| layout-ncol: 1
+#| results: hide
+#| fig-dpi: 300
+#| fig-width: 8
+#| fig-height: 5
+
+
+df <- rds("dataset")
+# Делаем столбцы для группы CT уже
+gg <- ggplot(df |> filter(`Вид используемого устройства` %in% c("Efferon LPS", "Efferon CT")),
+       aes(x = `SOFA/pSOFA перед гемоперфузией`, fill = `Вид используемого устройства`)) +
+  geom_histogram(data = df |> filter(`Вид используемого устройства` == "Efferon LPS"),
+           position = "identity", color = "black", binwidth = 1) +  # Столбцы для LPS (шире)
+  geom_bar(data = df |> filter(`Вид используемого устройства` == "Efferon CT"),
+           position = "identity", color = "black", width = 0.6) +  # Столбцы для CT (уже)
+  labs(title = NULL, 
+       x = NULL, 
+       y = NULL,
+       fill = NULL) +
+  scale_x_continuous(breaks = seq(min(df$`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE), 
+                                  max(df$`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE), 
+                                  by = 2)) +
+  scale_fill_manual(values = c("Efferon LPS" = "#1f77b4", "Efferon CT" ="brown1")) +  # Задаем контрастные цвета
+  theme_bw() +
+  theme(
+    legend.position = c(0.95, 0.95),  # Легенда в правый верхний угол (относительные координаты)
+    legend.justification = c(1, 1),   # Устанавливаем привязку легенды к правому верхнему углу
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 14),  # Формат заголовка легенды
+    legend.text = element_text(size = 14),  # Формат текста в легенде
+    plot.title = element_text(hjust = 0.5),  # Центрирование заголовка
+    panel.grid.minor = element_blank(),  # Убираем мелкую сетку
+    axis.title = element_text(size = 14),
+    axis.ticks.x.top = element_blank(),
+    axis.ticks.y.right = element_blank(),
+    axis.line = element_line(linewidth = 0),  # Устанавливаем одинаковую толщину линии рамки
+    axis.text = element_text(size = 14)
+  )
+gg
+# output_path <- getwd()
+# if (!dir.exists(output_path)) {
+#   dir.create(output_path, recursive = TRUE)
+# }
+# 
+# ggsave(
+#     filename = paste0(output_path, "/", "SOFA_plot", ".png"),
+#     plot = gg,
+#     width = 1400,
+#     height = 1200,
+#     dpi = 260,
+#     units = "px"
+#   )
+```
+
+```{r}
+#| label: fig-age
+#| fig-cap: 'Распределение пациентов по возрастным группам с учетом вида устройста'
+#| fig-subcap:
+#|   - ''
+#| layout-ncol: 1
+#| results: hide
+#| fig-dpi: 300
+#| fig-width: 8
+#| fig-height: 5
+
+df <- rds("dataset")
+
+library(ggplot2)
+library(dplyr)
+
+# Добавляем колонку с возрастными группами
+df_fig_age <- df |> 
+  filter(`Номер гемоперфузии` == 1)|>
+  mutate(`Возрастная группа` = cut(`Возраст (Полных лет)`, 
+                                   breaks = c(0, 20, 30, 40, 50, 60, 70, 80, 90), 
+                                   labels = c("0-20", "21-30", "31-40", "41-50", "51-60", 
+                                              "61-70", "71-79", "81-89"),
+                                   right = TRUE))  # Правая граница включена
+
+# Построение гистограммы
+gg <- ggplot(df_fig_age|>filter(`Вид используемого устройства` %in% c("Efferon LPS", "Efferon CT"))|>
+         filter(!is.na(`Возрастная группа`)),  # Убираем NA
+       aes(x = `Возрастная группа`, fill = `Вид используемого устройства`)) +
+  geom_bar(data = df_fig_age |> filter(`Вид используемого устройства` == "Efferon LPS"),
+           position = "identity", color = "black", binwidth = 1) +  # Столбцы для LPS (шире)
+  geom_bar(data = df_fig_age |> filter(`Вид используемого устройства` == "Efferon CT"),
+           position = "identity",  color = "black", width = 0.6) +  # Столбцы для CT (уже)
+  labs(
+    title = NULL, 
+    x = NULL, 
+    y = NULL,
+    fill = NULL  # Заголовок легенды
+  ) +
+  scale_fill_manual(values = c("Efferon LPS" = "#1f77b4", "Efferon CT" ="brown1")) +  # Задаем контрастные цвета
+  theme_bw() +
+  theme(
+    legend.position = c(0.95, 0.95),  # Легенда в правый верхний угол (относительные координаты)
+    legend.justification = c(1, 1),   # Устанавливаем привязку легенды к правому верхнему углу
+    panel.grid = element_blank(),
+    legend.title = element_text(size = 14),  # Формат заголовка легенды
+    legend.text = element_text(size = 14),  # Формат текста в легенде
+    plot.title = element_text(hjust = 0.5),  # Центрирование заголовка
+    panel.grid.minor = element_blank(),  # Убираем мелкую сетку
+    axis.title = element_text(size = 14),
+    axis.ticks.x.top = element_blank(),
+    axis.ticks.y.right = element_blank(),
+    axis.line = element_line(linewidth = 0),
+    axis.text = element_text(size = 14)
+  )
+gg
+
+# output_path <- getwd()
+# if (!dir.exists(output_path)) {
+#   dir.create(output_path, recursive = TRUE)
+# }
+# 
+# ggsave(
+#     filename = paste0(output_path, "/", "age", ".png"),
+#     plot = gg,
+#     width = 1400,
+#     height = 1200,
+#     dpi = 260,
+#     units = "px"
+#   )
+
+```
+
+# Таблица по болезням
+
+Ниже представлена таблица по частоте отмеченных болезней в группах "Efferon LPS", "Efferon CT". Номер гемоперфузии = 1.
+
+```{r}
+#| label: tbl-diseases
+#| tbl-cap: 'Частота встречаемости болезней'
+
+
+df_diseases <- dataset |>
+  select(`Вид используемого устройства`,
+         `Номер гемоперфузии`,
+         `Болезни`) |>
+  mutate(`Болезни` = na_if(`Болезни`, "---")) |>
+  filter(`Номер гемоперфузии` == 1) |>
+  filter(`Вид используемого устройства` %in% c("Efferon LPS", "Efferon CT"))|>
+  mutate(`Болезни` = str_to_lower(`Болезни`)) |>
+  separate_rows(`Болезни`, sep = "[.,]") |>
+  mutate(`Болезни` = str_trim(`Болезни`))  # Удаление лишних пробелов
+
+# Подсчет частоты болезней по виду устройства
+df_disease_freq <- df_diseases |>
+  mutate(
+    `Болезни` = str_trim(`Болезни`),  # Убираем лишние пробелы
+    `Болезни` = if_else(
+      `Болезни` %in% c("", "-", "---", ",", ".", "?"),  # Обозначения пустых значений
+      NA_character_, `Болезни`
+    )
+  ) |>
+  group_by(`Вид используемого устройства`, `Болезни`) |>  # Группировка по устройству и болезни
+  count(name = "Частота") |>
+  ungroup() |>
+  group_by(`Болезни`) |>
+  mutate(Процент = round((Частота / sum(Частота)) * 100, 2)) |>
+  ungroup()
+
+# Преобразование в ширинный формат
+df_disease_freq_wide <- df_disease_freq |>
+  pivot_wider(
+    names_from = `Вид используемого устройства`, 
+    values_from = c(Частота, Процент),
+    values_fn = list(Частота = sum, Процент = sum), # Суммируем частоты и проценты для каждого устройства
+    names_glue = "{`Вид используемого устройства`}_{.value}" # Форматируем имена столбцов
+  )
+
+# Форматирование процента и частоты в одном столбце
+df_disease_freq_wide <- df_disease_freq_wide |>
+  mutate(
+    `Efferon LPS` = paste0(replace_na(`Efferon LPS_Частота`, 0), 
+                           " (", replace_na(`Efferon LPS_Процент`, 0), "%)"),
+    `Efferon CT` = paste0(replace_na(`Efferon CT_Частота`, 0), 
+                          " (", replace_na(`Efferon CT_Процент`, 0), "%)")
+  ) |>
+  select(`Болезни`, `Efferon LPS`, `Efferon CT`)  # Оставляем только нужные столбцы
+
+df_disease_freq_wide |> kable()
+
+# library(writexl)
+# file_path <- file.path(getwd(), "disease_frequency.xlsx")
+# write_xlsx(df_disease_freq_wide, file_path)
+# file_path
+```
+
+# Проверка согласованности
+
+```{r}
+#| label: timeline-check
+#| include: FALSE
+
+df <- rds("dataset")
+
+#Добавили столбец с несоответствием по времени
+df <- df %>%
+  mutate(timeline_breakdown = case_when(
+    `Между гемосорбцией и занесением в БД` < 0 & `Между поступлением в ОРИТ и сорбцией` < 0 ~ "несоответствие",
+    `Между гемосорбцией и занесением в БД` < 0 ~ "несоответствие",
+    `Между поступлением в ОРИТ и сорбцией` < 0 ~ "несоответствие",
+    TRUE ~ "соответствие"
+  )) %>%
+  filter(timeline_breakdown != "Норма") 
+
+to_rds(df, "dataset_timeline")
+
+```
+
+```{r}
+#| label: tbl-cross_table
+#| tbl-cap: 'Cопряженность "Общего улучшения" и "Терапевтического эффекта"'
+
+
+df <- rds("dataset")
+
+# Создание таблицы сопряжения с учётом NA
+cross_wide <- as.data.frame(table(df$`Общее улучшение`, df$`Терапевтический эффект`, useNA = "ifany")) %>%
+  mutate(Percent = Freq / sum(Freq) * 100,
+         Combined = paste(Freq, "(", round(Percent, 1), "%)", sep = "")) %>%
+  select(Var1, Var2, Combined) %>%
+  pivot_wider(names_from = Var2, values_from = Combined)
+
+# Переименовала столбцы для удобства
+names(cross_wide) <- c(" ", names(cross_wide)[-1])
+
+kable(cross_wide)
+
+#Добавили столбец с несоответствием по времени
+df <- df %>%
+  mutate(timeline_breakdown = case_when(
+    `Между гемосорбцией и занесением в БД` < 0 & `Между поступлением в ОРИТ и сорбцией` < 0 ~ "несоответствие",
+    `Между гемосорбцией и занесением в БД` < 0 ~ "несоответствие",
+    `Между поступлением в ОРИТ и сорбцией` < 0 ~ "несоответствие",
+    TRUE ~ "соответствие"
+  )) %>%
+  filter(timeline_breakdown != "Норма") 
+
+# Добавляем столбец с несоответствием оценок врачей
+
+library(purrr)
+
+get_patient_ids <- function(pairs, df) {
+  # Фильтрация ID на основе переданных пар значений
+  results <- map_df(pairs, function(pair) {
+    value1 <- pair[1]
+    value2 <- pair[2]
+
+    df %>%
+      filter(`Общее улучшение` == value1 & `Терапевтический эффект` == value2) %>%
+      select(ID)
+  })
+
+
+  selected_ids <- results$ID
+
+  df <- df %>%
+    mutate(`mistrust_of_estimation` = ifelse(ID %in% selected_ids, "несоответствие", "соответствие"))
+
+  return(df)
+}
+
+# Список пар значений. Получаем после анализа таблицы сопряженности по 2-м интерисующим столбцам
+pairs <- list(
+  c("2 - Очень сильно улучшилось.", "3 - Минимальное улучшение. Незначительное улучшение, не влияющие на клинический статус пациента."),
+  c("2 - Очень сильно улучшилось.", "4 - Без изменений или хуже."),
+  c("3 - Сильно улучшилось.", "4 - Без изменений или хуже."),
+  c("5 - Без изменений.", "1 - Отмечено значительное улучшение. Полная или почти полная ремиссия симптомов."),
+  c("6 - Минимальное ухудшение.", "1 - Отмечено значительное улучшение. Полная или почти полная ремиссия симптомов."),
+  c("6 - Минимальное ухудшение.", "2 - Умеренное улучшение. Частичная ремиссия симптомов."),
+  c("7 - Сильно ухудшилось.", "1 - Отмечено значительное улучшение. Полная или почти полная ремиссия симптомов."),
+  c("7 - Сильно ухудшилось.", "2 - Умеренное улучшение. Частичная ремиссия симптомов."),
+  c("7 - Сильно ухудшилось.", "3 - Минимальное улучшение. Незначительное улучшение, не влияющие на клинический статус пациента.")
+)
+
+df <- get_patient_ids(pairs, df)
+
+
+```
+
+```{r}
+#| label: df-filter
+#| include: false
+
+df_filtered <- df %>%
+  filter(mistrust_of_estimation == 'соответствие' & timeline_breakdown == 'соответствие')
+to_rds(df_filtered, "df_filtered")
+```
+
+```{r}
+#| label: tbl-mistrust
+#| tbl-cap: 'Сомнительные записи'
+
+df_filtered <- rds("df_filtered")
+
+df %>%
+  filter(mistrust_of_estimation == "несоответствие" | timeline_breakdown == "несоответствие") %>%
+  mutate(`№` = row_number()) %>%  # Добавляем номер строки
+  select(
+    `№`, 
+    ID,
+    `Вид используемого устройства`,
+    `Устройство (номер)`,
+    `Поступление в ОРИТ`,
+    `Дата проведения гемоперфузии Efferon`,
+    `Между гемосорбцией и занесением в БД`,
+    `Между поступлением в ОРИТ и сорбцией`,
+    `Cоответствие таймлайна` = mistrust_of_estimation,
+    `Cоответстие оценки врача` = timeline_breakdown,
+    ) %>%
+  kable()
+
+```
+
+В дальнейшем учитываются пациенты с согласованными данными.
+
+# Анализ оценки врачом состояния пациента
+
+Посмотрим отличается ли оценка врачом изменения состояния пациента в группе LPS и СT
+
+```{r}
+#| label: tbl-table11
+#| tbl-cap: 'Оценка состояния для двух устройств'
+
+library(dplyr)
+library(gtsummary)
+
+df_filtered <- rds("df_filtered")
+
+df_general_stat <- df_filtered %>%
+  filter(`Вид используемого устройства` %in% c('Efferon CT', 'Efferon LPS')) %>%
+  # mutate(across(
+  #   c(`Общее улучшение`, `Терапевтический эффект`, `Побочные эффекты`),
+  #   ~ replace(., . == 0, NA) # В выбранных столбцах заменить 0 на NA
+  # )) %>%
+  select(
+    `Общее улучшение`,
+    `Терапевтический эффект`,
+    `Побочные эффекты`,
+    `Вид используемого устройства`
+  )
+
+table <- df_general_stat %>%
+  tbl_summary(
+    by = `Вид используемого устройства`,
+    type = where(is.numeric) ~ "continuous2",
+     statistic = all_continuous() ~ c("{median} ({p25}, {p75})", ("{mean} ({sd})")),
+    digits = all_continuous() ~ 2,
+    missing = "ifany"
+  ) %>%
+  #add_p() %>%
+  add_overall() %>%
+  modify_header(label = "Переменные") %>%
+  modify_caption("**Описание состояний по виду используемого устройства**")
+
+table
+
+```
+
+Посмотрим чем отличаются оценки врачей для пациентов в группе LPS разделенных по "SOFA/pSOFA перед гемоперфузией"
+
+```{r}
+#| label: tbl-table12
+#| tbl-cap: 'Суммирующая таблица с оценкой эффекта по SOFA/pSOFA'
+
+df_filtered <- rds("df_filtered")|>
+  filter(`Вид используемого устройства` == "Efferon LPS")|>
+  mutate(SOFA_group = case_when(
+    is.na(`SOFA/pSOFA перед гемоперфузией`) ~ NA_character_, # Если значение NA, то присваиваем NA
+    `SOFA/pSOFA перед гемоперфузией` >= 0 & `SOFA/pSOFA перед гемоперфузией` <= 7 ~ "0-7",
+    `SOFA/pSOFA перед гемоперфузией` >= 8 & `SOFA/pSOFA перед гемоперфузией` <= 11 ~ "8-11",
+    `SOFA/pSOFA перед гемоперфузией` >= 12 ~ "12-18"
+  ))
+
+df_filtered <- df_filtered |>
+  mutate(SOFA_group = if_else(is.na(SOFA_group), "Неизвестно", SOFA_group)) |>
+  mutate(SOFA_group = factor(SOFA_group, levels = c("0-7", "8-11", "12-18", "Неизвестно")))
+
+
+
+# табл с оценкой  эффекта по SOFA
+table_summary <- df_filtered |>
+  select(`Терапевтический эффект`,
+         `Общее улучшение`,
+         `Побочные эффекты`,
+         `SOFA_group`)|>
+  tbl_summary(
+    by = SOFA_group,
+    statistic = list(all_continuous() ~ "{mean} ({sd})", # непрерывные переменные
+                     all_categorical() ~ "{n}({p}%)"), # категориальные переменные {n}
+    missing = "ifany"
+  ) %>%
+  #add_p() %>%
+  add_overall() |>
+  modify_header(label = "Переменные")
+
+table_summary
+```
+
+# Анализ исходов.
+
+В анализе пациенты с номером гемоперфузии = 1.
+
+```{r}
+#| label: tbl-surv
+#| tbl-cap: 'Сравнительная таблица исходов'
+
+df_filtered_outcome <- rds("df_filtered")|>
+  filter(!is.na(`Исход`))|>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1)|>
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `Исход`)
+
+table_summary <- df_filtered_outcome |>
+  tbl_summary(
+    by = Исход,
+    missing = "no",  
+    statistic = list(all_continuous() ~ "{mean} ({sd})", # непрерывные переменные
+                     all_categorical() ~ "{n}({p}%)") # категориальные переменные 
+  )%>%
+  add_p() 
+
+table_summary
+
+```
+
+Сравнение времени Между гемосорбцией и занесением в БД по типу исхода. В анализе пациенты с номером гемоперфузии = 1.
+
+Исходы по видам используемого устройства
+
+```{r}
+#| label: tbl-surv3
+#| tbl-cap: 'Сравнительная таблица исходов LPS/CT/LPS neo'
+
+
+df_filtered_outcome <- rds("df_filtered")|>
+  filter(`Номер гемоперфузии` == 1) |>
+  select(`Вид используемого устройства`, `Исход`) |>
+  mutate(
+    `Исход` = fct_explicit_na(`Исход`, na_level = "Не указано"),  # Явное добавление NA как категории
+   
+  )
+
+table_summary <- df_filtered_outcome |>
+  tbl_summary(
+    by = `Вид используемого устройства`,
+    missing = "ifany",  # Учитываем NA
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",  # Непрерывные переменные
+      all_categorical() ~ "{n} ({p}%)"  # Категориальные переменные
+    )
+  ) %>%
+  add_p()
+
+table_summary
+
+```
+
+```{r}
+#| label: fig-crr
+#| eval: true
+
+library(gtsummary)
+
+df_filtered_outcome <- rds("df_filtered")|>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1)|>
+  
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `Между гемосорбцией и занесением в БД`,
+         `SOFA/pSOFA перед гемоперфузией`,
+         `Исход`,
+         `Вид используемого устройства`,
+         `Возраст (Полных лет)`) |> 
+  
+  mutate(
+    `SOFA/pSOFA перед гемоперфузией` = replace_na(`SOFA/pSOFA перед гемоперфузией`, mean(`SOFA/pSOFA перед гемоперфузией`)),
+    `Возраст (Полных лет)` = replace_na(`Возраст (Полных лет)`, mean(`Возраст (Полных лет)`)), 
+    time = `Между гемосорбцией и занесением в БД` + `Между поступлением в ОРИТ и сорбцией`,
+    strata = if_else(`Между поступлением в ОРИТ и сорбцией` < 3, 'ранние', 'поздние'),
+    `Возраст (Полных лет / 10)` = `Возраст (Полных лет)`/10
+  )
+  
+
+df_filtered_outcome <- df_filtered_outcome %>%
+  mutate(Исход_crr = factor(
+    case_when(
+      `Исход` == "Смерть" ~ 1, 
+      `Исход` == "Выписан" ~ 2,
+      is.na(`Исход`) ~ 0
+    ), levels = c(0, 1, 2),
+  ))  # Преобразуем в 0 и 1, остальное в NA
+
+crr <- crr(
+  Surv(`Между гемосорбцией и занесением в БД`, `Исход_crr`) 
+  ~ `Между поступлением в ОРИТ и сорбцией` + `SOFA/pSOFA перед гемоперфузией` + `Возраст (Полных лет / 10)`, 
+  data = df_filtered_outcome,
+  failcode = 2
+  )
+
+
+
+cuminc <- cuminc(Surv(`Между гемосорбцией и занесением в БД`, `Исход_crr`) ~ strata,  data = df_filtered_outcome
+  )
+
+cuminc$tidy <-  cuminc$tidy |> 
+  mutate(
+    estimate = if_else(outcome == 1, 1 - estimate, estimate),
+    conf.low = if_else(outcome == 1, 1 - conf.low, conf.low),
+    conf.high = if_else(outcome == 1, 1 - conf.high, conf.high),
+    outcome = if_else(outcome == 1, 'выживаемость', 'выписка из ОРИТ')
+  )
+
+cuminc |> ggcuminc(outcome =  c('выживаемость', 'выписка из ОРИТ')) + 
+  #add_confidence_interval() + 
+  #add_risktable() + 
+  #add_censor_mark() +
+  scale_x_continuous(breaks = c(0, 3, 7, 14, 28, 60), limits = c(0, 60))
+```
+
+```{r}
+#| label: logit
+
+df_filtered_outcome <- df_filtered_outcome %>%
+  mutate(Исход_logit = factor(ifelse(Исход == "Смерть", 0, 
+                        ifelse(Исход == "Выписан", 1, 0)), levels = c(0, 1)))  
+
+model <- glm(Исход_logit ~ I(`Между поступлением в ОРИТ и сорбцией`/5) + `SOFA/pSOFA перед гемоперфузией` + `Возраст (Полных лет)`, 
+             data = df_filtered_outcome, 
+             family = binomial(link = "logit"))  # Бинарная зависимая переменная
+
+tbl_regression(model, exponentiate = TRUE)
+
+p1 <- 1 -predict(
+  model, 
+  newdata = tibble(
+    `Между поступлением в ОРИТ и сорбцией` = c(0, 1, 3, 5), 
+    `SOFA/pSOFA перед гемоперфузией` = median(df_filtered_outcome$`SOFA/pSOFA перед гемоперфузией`),
+    `Возраст (Полных лет)` = median(df_filtered_outcome$`Возраст (Полных лет)`)
+  )
+)
+
+summary(model)
+
+smr <- df_filtered_outcome |> 
+  group_by(strata) |> 
+  summarise(
+    Me = median(`Между гемосорбцией и занесением в БД`),
+    Q1 = quantile(`Между гемосорбцией и занесением в БД`, probs = 0.25),
+    Q3 = quantile(`Между гемосорбцией и занесением в БД`, probs = 0.75),
+  )
+
+```
+
+```{r}
+#| label: TEST SOFA-ORITdays
+
+# Загружаем и фильтруем данные
+df_filtered_scatter <- rds("df_filtered") |>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1) |>
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `SOFA/pSOFA перед гемоперфузией`) |>
+  
+  # Заменяем пропущенные значения
+  mutate(
+    `SOFA/pSOFA перед гемоперфузией` = replace_na(`SOFA/pSOFA перед гемоперфузией`, 
+                                                  mean(`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE)),
+    `Между поступлением в ОРИТ и сорбцией` = replace_na(`Между поступлением в ОРИТ и сорбцией`, 
+                                                       mean(`Между поступлением в ОРИТ и сорбцией`, na.rm = TRUE))
+  )
+
+# Строим jitter plot с маленькими окружностями без линии
+ggplot(df_filtered_scatter, aes(x = `Между поступлением в ОРИТ и сорбцией`, 
+                               y = `SOFA/pSOFA перед гемоперфузией`)) +
+  geom_jitter(alpha = 0.6, size = 1, shape = 1, color = "black", 
+              width = 0.1, height = 0.1, stroke = 0.8) +
+  labs(x = "Время между поступлением в ОРИТ и сорбцией",
+       y = "SOFA/pSOFA перед гемоперфузией",
+       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+```
+
+```{r}
+#| label: TEST SOFA-ORITdays2
+#| 
+# Загружаем и фильтруем данные, удаляем строки с пропущенными значениями
+df_filtered_scatter <- rds("df_filtered") |>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1) |>
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `SOFA/pSOFA перед гемоперфузией`) |>
+  
+# Удаляем строки с пропущенными значениями и 0
+  drop_na(`Между поступлением в ОРИТ и сорбцией`, 
+          `SOFA/pSOFA перед гемоперфузией`)|>
+filter(`SOFA/pSOFA перед гемоперфузией` != 0)
+
+# Строим jitter plot с маленькими окружностями без линии
+ggplot(df_filtered_scatter, aes(x = `Между поступлением в ОРИТ и сорбцией`, 
+                               y = `SOFA/pSOFA перед гемоперфузией`)) +
+  geom_jitter(alpha = 0.6, size = 1, shape = 1, color = "black", 
+              width = 0.1, height = 0.1, stroke = 0.8) +
+  labs(x = "Время между поступлением в ОРИТ и сорбцией",
+       y = "SOFA/pSOFA перед гемоперфузией",
+       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 12))
+```
+
+```{r}
+
+#| label: tbl-test 
+#| tbl-cap: 'Исход/пол'
+
+
+df_filtered_outcome <- rds("df_filtered")|>
+ filter(`Номер гемоперфузии` == 1) |>
+  select(`Пол`, `Исход`) |>
+  mutate(
+    `Исход` = fct_explicit_na(`Исход`, na_level = "Не указано"),  # Явное добавление NA как категории
+   
+  )
+
+table_summary <- df_filtered_outcome |>
+  tbl_summary(
+    by = `Пол`,
+    missing = "ifany",  # Учитываем NA
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",  # Непрерывные переменные
+      all_categorical() ~ "{n} ({p}%)"  # Категориальные переменные
+    )
+  ) %>%
+  add_p()
+
+table_summary
+```
+
+```{r}
+
+# Загружаем и фильтруем данные
+df_filtered_scatter <- rds("df_filtered") |>
+  droplevels() |>
+  filter(`Номер гемоперфузии` == 1) |>
+  select(`Между поступлением в ОРИТ и сорбцией`,
+         `SOFA/pSOFA перед гемоперфузией`,
+         `Исход`) |>
+  
+  # Удаляем строки с пропущенными значениями и где SOFA/pSOFA = 0
+  drop_na(`Между поступлением в ОРИТ и сорбцией`, 
+          `SOFA/pSOFA перед гемоперфузией`) |>
+  filter(`SOFA/pSOFA перед гемоперфузией` != 0) |>
+  
+  # Создаем категорию для неизвестных исходов
+  mutate(
+    Исход_группа = case_when(
+      `Исход` %in% c("Смерть", "Выписан") ~ `Исход`,
+      TRUE ~ "Неизвестен"
+    )
+  )
+
+# Создаем данные для прямых подписей
+label_df <- df_filtered_scatter |>
+  group_by(Исход_группа) |>
+  summarise(
+    x_pos = max(`Между поступлением в ОРИТ и сорбцией`, na.rm = TRUE),
+    y_pos = max(`SOFA/pSOFA перед гемоперфузией`, na.rm = TRUE)
+  ) |>
+  mutate(
+    y_pos = case_when(
+      Исход_группа == "Смерть" ~ y_pos + 1,
+      Исход_группа == "Выписан" ~ y_pos + 2,
+      Исход_группа == "Неизвестен" ~ y_pos + 3
+    )
+  )
+
+# Строим scatter plot с линией для неизвестных исходов
+ggplot(df_filtered_scatter, 
+       aes(x = `Между поступлением в ОРИТ и сорбцией`, 
+           y = `SOFA/pSOFA перед гемоперфузией`)) +
+  
+  # Данные - все точки в виде серых окружностей с jitter
+  geom_jitter(alpha = 0.6, size = 1.5, shape = 1, stroke = 0.8, 
+              color = "black", width = 0.1, height = 0.1) +
+  
+  # Линии тренда для каждой группы исходов
+  geom_smooth(aes(group = Исход_группа, color = Исход_группа), 
+              method = "lm", se = FALSE, linewidth = 1.2) +
+  
+  # Прямые подписи
+  geom_text(data = label_df, 
+            aes(x = x_pos, y = y_pos, label = Исход_группа, color = Исход_группа),
+            hjust = 1.1, size = 4, fontface = "bold") +
+  
+  # Оформление
+  scale_color_manual(values = c("Смерть" = "red3", 
+                               "Выписан" = "blue4", 
+                               "Неизвестен" = "gray30")) +
+  theme_bw() +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank()) +
+  labs(x = "Время между поступлением в ОРИТ и сорбцией",
+       y = "SOFA/pSOFA перед гемоперфузией",
+       title = "Зависимость SOFA/pSOFA от времени между поступлением в ОРИТ и сорбцией")+
+  theme(plot.title = element_text(size = 12))
+```
+
+```{r}
+# model_interaction <- glm(Исход ~ `Между поступлением в ОРИТ и сорбцией` * `SOFA/pSOFA перед гемоперфузией`, 
+#                          data = df_filtered_outcome, 
+#                          family = binomial(link = "logit"))
+# summary(model_interaction)
+# # Оформление результатов в таблицу с пересчётом коэффициентов в OR
+# tbl_regression(model_interaction, exponentiate = TRUE)
+
+```
